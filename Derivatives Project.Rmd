@@ -1,0 +1,261 @@
+---
+title: "Derivatives"
+author: "André Maia PG46176 Carlos Ferreira PG46201 Joana Almeida PG46298 Nuno Peixoto PG47993"
+date: "12/12/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+rm(list = ls())
+#install.packages("tidyquant")
+#install.packages("dplyr")
+library(quantmod)
+library(rvest)
+library(lubridate)
+library(derivmkts)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(scales)
+library(gganimate)
+
+```
+
+```{r getSymbols, include=FALSE}
+
+options("getSymbols.warning4.0"=FALSE)
+options("getSymbols.yahoo.warning"=FALSE)
+
+getSymbols("GOOG", from = '2021-11-30',
+          to = Sys.Date(),warnings = FALSE,
+          auto.assign = TRUE)
+getSymbols("FB", from = '2021-11-30',
+          to = Sys.Date(),warnings = FALSE,
+          auto.assign = TRUE)
+getSymbols("TSLA", from = '2021-11-30',
+          to = Sys.Date(),warnings = FALSE,
+          auto.assign = TRUE)
+getSymbols("AMZN", from = '2021-11-30',
+          to = Sys.Date(),warnings = FALSE,
+          auto.assign = TRUE)
+getSymbols("UAL", from = '2021-10-17',
+          to ='2021-12-17' ,warnings = FALSE,
+          auto.assign = TRUE)
+
+```
+
+
+
+## Question 1
+
+# a)
+
+For both at-the-money 3-month **European call** and **American put** we chose the same underling asset, *United Airlines Holdings, Inc* stocks.
+
+**Volatility** was calculated by utilizing the annualized standard deviation from the last 3-month prices (17/10/2021 to 17/12/2021).
+
+```{r UAL, echo=FALSE}
+#calculate United Airlines Holdings volatility
+annual_sd <-(sd(UAL$UAL.Close,na.rm = TRUE)*sqrt(252))/100
+annual_sd
+Price_UAL <- data.frame(UAL$UAL.Close) %>% tail(.,1)
+Price_UAL
+```
+
+As an approximation we take for **risk free rate** the *3-month US treasury bill rate* which is currently 0.05% (https://www.treasury.gov/resource-center/data-chart-center/interest-rates/Pages/TextView.aspx?data=yield).
+
+
+```{r}
+#An at-the-money 3-month European call
+s<-Price_UAL$UAL.Close; k<-Price_UAL$UAL.Close; v<-annual_sd; r<-0.0005; tt<-3/12; d<-0
+bscall(s, k, v, r, tt, d)
+```
+
+From Yahoo Finance, the option price for an **American call** option (different from a European call, but it's only a term to measure our estimate) with the strike price of $40 and the same time to maturity is fixed at 4.92 and **Implied Volatility** with 54.52% (our estimation was *56.8%*).
+
+```{r}
+#An at-the-money 3-month American Putt
+binomopt(s=Price_UAL$UAL.Close, k=Price_UAL$UAL.Close, v=annual_sd, r=0.0005, tt=3/12, d=0, nstep=1000,
+          american=TRUE, putopt=TRUE,
+          crr=TRUE, returntrees = TRUE)$price
+
+```
+Also from Yahoo Finance, the option price for an **American put** option with a strike of $40 and the same time to maturity is fixed at 3.85 and **Implied Volatility** with 53.35%.
+
+# b)
+
+Compute the implied volatility for different strike prices and maturities.
+In this exercise we chose a *TESLA* **put option**. The share price on this day was 899.94.
+We used three different strikes, 880 **out the money**, 900 **at the money** and 920 **in the money**.
+
+```{r Volatility, echo=FALSE}
+#TESLA underlying asset
+# Put Option
+impvol <- function(args) {s <- 899.94; r <- 0.0005; d <- 0
+         strike <- args$strike[1]
+         maturity <- args$maturity[1]
+         price <- args$price[1]
+         
+         bsputimpvol(s, strike, r, maturity, d, price)}
+
+options <- tibble(i=1:9,
+                  strike=rep(c(880,900,920),3),
+                  maturity=c(rep(0.25,3),rep(0.5,3),rep(1,3)),
+                  price=c(102,111.4,122.10,145.9,155.5,167.25,213.10,224.38,237.23))
+
+options <- options %>% 
+  nest(args=-i) %>% 
+  mutate(ivol=map_dbl(args,impvol)) %>% 
+  unnest(args) %>% 
+  select(-i,-price) %>% 
+  pivot_wider(names_from = maturity, values_from = ivol) %>% 
+  rename('Strike price'=strike,
+         '3-month maturity'='0.25',
+         '6-month maturity'='0.5',
+         '12-month maturity'='1')
+
+options %>% 
+   knitr::kable(digits = 4)
+
+
+```
+
+Through the chart we can conclude the volatility is not the same. The IV is higher **out the money**. This make sense because it's riskier to invest in an option **out the money** and at the same time the returns can be higher than investing in strikes **at the money** or **in the money**. 
+In this example the time is not strongly correlated with the **implied volatility**, between the *3-month maturity* and the *12-month maturity* the IV increase. However, in the middle the IV decreases in all strikes. 
+At the end we can say that IV is not static, the volatility changes as time passes and is different for each strike and maturity. The riskier the option, the higher the **implied volatility**. 
+
+## Question 2
+
+Using Bank BIG trading platform, for the portfolio created for the Challenge, implement a portfolio insurance strategy.
+
+For both hedging strategies, from index options and synthetically, we follow the same idea, **long on the spot** and **long on the put**. Through this statement we want ro reply a long call option like the following plot:
+
+<center>
+![](/Users/NUNOG/OneDrive/Ambiente de Trabalho/Derivados R/Trabalho/LongspotLongput.png)
+
+
+The objective in both strategies is to limit the losses, stipulate a limit loss but not limit the gains. It's a more expensive strategy because the investor needs to buy the spot (portfolio stocks) and the put, but give the investor a investment with limit losses and unlimited gains. 
+
+
+# Portfolio insurance strategy using index options
+
+
+For this strategy we create the following portfolio:
+
+```{r Portfolio, echo=FALSE}
+df <- data.frame(Stock=c("TESLA","MARATHON OIL","CARNIVAL","ROYAL CARIBBEAN"),Weight=c("27.44%","30.07%","31,69%","10.80%"))
+head(df)
+```
+The **index market** and **risk free rate** chosen here were *SP500* and *United States Treasury Bill SEC Market 4 Week* (daily). For the last one we divided the values by 12 and 100 to have the annualized data.
+The values were extracted through Refinitiv Eikon with time data between **30/11/2016** to **30/11/2021** (monthly).
+With these values we want to find the portfolio **Beta**, so we made the following regression:
+
+<center>
+![](/Users/NUNOG/OneDrive/Ambiente de Trabalho/Derivados R/Trabalho/regressionDerivados.png)
+
+
+With 72 observations, our regression has a **R square** of about 62%, it isn't high but it's acceptable. The **Beta** is about 2.47, this means that when the SP500 increases/decreases 1% the portfolio increasse/decreases 2.47%.
+
+After calculating Beta we chose the SP500 option available in the Bank BIG trading platform, *E-mini S&P 500 End of Month Dec2021*. It's an index mini future option with 50 contracts per option and with a maturity at the end of December 2021. 
+Next, our group discussed the limit minimum portfolio value, The portfolio investment start with **81 438,50 EUR** and minimum value decided was **81 416,04 EUR**. Based in the value stipulation or condition we invested in one long put option with strike value of 4530. 
+
+The investment started in **03/12** and finished in **23/12**. In the first trading day the index value was about 4531.25 and the last day, the index value was at 4725.79. In the next plots is displayed the trading platform with all values.
+
+
+<center>
+![](/Users/NUNOG/OneDrive/Ambiente de Trabalho/Derivados R/Trabalho/Stretegy1.1.png)
+
+<center>
+![](/Users/NUNOG/OneDrive/Ambiente de Trabalho/Derivados R/Trabalho/Stretegy1.png)
+
+
+During the strategy we commited a mistake, by error we bought shares from *Royal Gold Inc*. So for that reason the value of the portfolio ended with **87 964.82 EUR** instead of 88 837.32 EUR. Our portfolio had a profit of about **6526.32 EUR**, Even though the gain,  the point here is not having a profit but hedging the portfolio.  
+
+After we created this strategy we could find two weaknesses:
+
+First one was the hedging itself, we chose an **index future option** instead of a index option, the underlying asset is a future not a stock. The problem here is that the time to maturity for both the option and the futures contract is different, the *ttm* option was at December 31 and future *ttm* will be in March 2022.
+
+Second problem is about the market **Beta**. We assume for this strategy the Beta is static and even though he have a considerable time range for the regression, in a month it's almost certain that the portfolio Beta changes because Beta is not static but dynamic. 
+
+
+# Synthetic portfolio insurance strategy
+
+
+This strategy is different from the last one, instead of following the Beta value in a passive way, we will follow the **Delta** value of each option, actively. Every day, during the strategy we need to adjust our Portfolio. The strategy started at 13/12 and finished at 29/12.
+
+
+For each asset our Portfolio has 10 000 options. So for an option Delta with -0.1 we buy 1000 shares from the underlying asset. The decision to buy or sell shares is measured by the change of Delta value.
+
+The **Delta** is defined as the rate of change of the option price with respect to the price of the underlying asset. It's the slope of the curve that relates the option price to the underlying asset price. Suppose that the delta of a call option on the stock is 0.6. This mean that when the stock price changes by a small amount, the option price changes by about 60% of that amount.
+
+Our portfolio has four different assets/companies, with 10 000 long put options for each one that give a total investment of 40 000 options plus the number of shares. The total initial investment in this strategy was 35 882 338 EUR.  
+
+In the following plots we show the movement of the portfolio value, the portfolio cash flow and the total change in the investor wealth. In the second one you can find the delta value for each option along the strategy's timespan. 
+
+
+```{r PortandCash, echo=FALSE}
+setwd("/Users/NUNOG/OneDrive/Ambiente de Trabalho/Derivados R/TESTE/derivatives/derivatives")
+
+data1 <- read_excel('Trabalho de derivados.xlsx', sheet="ggplot", range = "B2:D38", na = "**")
+theme_set(theme_gray())
+
+p <- data1 %>%
+  ggplot(data=.,
+         mapping=aes(x = Date, y = Value, color = Type)) +
+  geom_line(size=1)
+p <- p + scale_y_continuous(labels = function(x) format(x,scientific = FALSE))
+p1 <- p + transition_reveal(data1$Date, range = NULL, keep_last = TRUE)
+
+p1 + labs(title = "Strategy Movement",
+          subtitle = "Investment Health",
+          caption = "Data source: image by authors")
+```
+
+We can see the total investment value remains the same, when the portfolio value decreased, the accumulated cash flows increased, maintaining a constant total value. This fact results in the established strategy, the losses were limited. However the strategy still led us to gains. The results of the synthetic strategy was what we were expecting and our investment had a gain of about 283 517 EUR, an increase of 0.7% of initial value.  
+
+
+```{r delta, echo=FALSE}
+data2 <- read_excel('Trabalho de derivados.xlsx', sheet="ggplot", range = "F2:H50", na = "**")
+theme_set(theme_gray())
+
+q <- data2 %>%
+  ggplot(data=.,
+         mapping=aes(x = Date, y = Value, color = Stock)) +
+  geom_line(size=1)
+q <- q + scale_y_continuous(labels = function(x) format(x,scientific = FALSE))
+q1 <- q + transition_reveal(data2$Date, range = NULL, keep_last = TRUE)
+
+q1 + labs(title = "Delta",
+          subtitle = "Change along the strategy period",
+          caption = "Data source: image by authors")
+```
+
+During the synthetic strategy the Delta value between **13/12** to **20/12** decreased (more negative), so we needed to buy more shares. Since **20/12** the delta decreased with exception of Amazon and we sold the number of shares corresponding the change value of Delta. This fact is present in the next and last plot. During the trading time, all shares with exception of Amazon increased stock price and for that reason selling shares added value to the portfolio.
+
+
+```{r number, echo=FALSE}
+data3 <- read_excel('Trabalho de derivados.xlsx', sheet="ggplot", range = "J2:L50", na = "**")
+theme_set(theme_gray())
+
+n <- data3 %>%
+  ggplot(data=.,
+         mapping=aes(x = Date, y = Number, color = Stock)) +
+  geom_line(size=1)
+n <- n + scale_y_continuous(labels = function(x) format(x,scientific = FALSE))
+n1 <- n + transition_reveal(data3$Date, range = NULL, keep_last = TRUE)
+
+n1 + labs(title = "Number of portfolio shares",
+          subtitle = "During the strategy period",
+          caption = "Data source: image by authors")
+
+```
+
+Compared to a portfolio insurance strategy using index options, **this last strategy is more efficient**, the hedging is calibrated every trading day, like we said before this is an active strategy in contrast with a Beta strategy that is passive. 
+
+
+All of the data utilized in the construction of this strategy is available in the *excel spreadsheet* attached in the file.
+
+
+
